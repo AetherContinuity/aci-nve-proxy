@@ -1,0 +1,9 @@
+name = "aci-nve-proxy"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# Ei tarvita API-avainta — NVE Magasinstatistikk on avoin
+
+[[routes]]
+# pattern = "nve.ruotsalainen-marko.workers.dev/*"
