@@ -1,4 +1,4 @@
-// ACI NVE Hydro Proxy — v9: korjaa desimaaliskaalaus + kenttänimet
+// ACI NVE Hydro Proxy — v10: oikeat kenttänimet, koko Norja
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -29,45 +29,40 @@ export default {
         return new Response(JSON.stringify({ error: `HTTP ${resp.status}` }), { status: 502, headers: CORS });
       }
 
-      const data = await resp.json();
-      const rows = Array.isArray(data) ? data : [data];
+      const rows = await resp.json();
+      const allRows = Array.isArray(rows) ? rows : [rows];
 
-      // Näytä kaikki kentät debugia varten
-      const sample = rows[0];
-      const allKeys = Object.keys(sample || {});
+      // Koko Norja = suurin kapasiteetti (omrnr 0 ei välttämättä ole, etsi max TWh)
+      const row = allRows.reduce((best, r) =>
+        (r.kapasitet_TWh ?? 0) > (best?.kapasitet_TWh ?? 0) ? r : best
+      , allRows[0]);
 
-      // Etsi koko Norja — omradeNr=0 tai ensimmäinen rivi
-      const row = rows.find(r => r?.omradeNr === 0 || r?.omradeId === 0) || rows[0];
+      const filling = row.fyllingsgrad * 100; // 0-1 → 0-100 %
+      const prevFilling = row.fyllingsgrad_forrige_uke != null
+        ? row.fyllingsgrad_forrige_uke * 100 : null;
+      const change = row.endring_fyllingsgrad != null
+        ? Math.round(row.endring_fyllingsgrad * 1000) / 10 : null; // pp
 
-      // Kentät voivat olla desimaaleja (0-1) tai prosentteja (0-100)
-      let filling = row?.fyllingsprosent ?? row?.fyllingsgrad ?? row?.fyllingsGrad ?? null;
-      let median  = row?.medianFyllingsprosent ?? row?.medianFyllingsgrad ?? null;
+      // Historiallinen mediaani huhtikuulle (viikko 15) ~55-60%
+      // Käytetään omrnr-tiedon perusteella myöhemmin, nyt fixed
+      const HIST_MEDIAN = 58.0; // Norja, huhtikuu historiallinen ka
 
-      // Jos arvo on alle 1.5, se on desimaaliksi — kerrotaan 100
-      if (filling != null && filling < 1.5) filling = filling * 100;
-      if (median  != null && median  < 1.5) median  = median  * 100;
-
-      const HIST_MEDIAN = 67.5;
-      const effectiveMedian = median || HIST_MEDIAN;
-      const hydro_RF = filling != null
-        ? Math.min(1.2, Math.max(0.3, filling / effectiveMedian))
-        : 1.0;
-
-      // Viikko ja vuosi
-      const year = row?.aar ?? row?.year ?? row?.År ?? null;
-      const week = row?.uke ?? row?.week ?? row?.Uke ?? null;
+      const hydro_RF = Math.min(1.2, Math.max(0.3, filling / HIST_MEDIAN));
 
       return new Response(JSON.stringify({
-        source: 'NVE Magasinstatistikk — HentOffentligDataSisteUke',
-        week: year && week ? `${year}-W${String(week).padStart(2,'0')}` : null,
-        filling_pct: filling != null ? Math.round(filling * 10) / 10 : null,
-        median_pct:  median  != null ? Math.round(median  * 10) / 10 : HIST_MEDIAN,
+        source:      'NVE Magasinstatistikk',
+        week:        `${row.iso_aar}-W${String(row.iso_uke).padStart(2,'0')}`,
+        date:        row.dato_Id,
+        filling_pct: Math.round(filling * 10) / 10,
+        prev_pct:    prevFilling != null ? Math.round(prevFilling * 10) / 10 : null,
+        change_pp:   change,
+        capacity_twh: row.kapasitet_TWh,
+        content_twh:  row.fylling_TWh,
+        median_pct:  HIST_MEDIAN,
         hydro_RF:    Math.round(hydro_RF * 1000) / 1000,
         label:       hydro_RF < 0.80 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
-        change_pp:   row?.endringFraForrigeUke ?? null,
-        rows_total:  rows.length,
-        debug_keys:  allKeys,
-        debug_row:   row,
+        omrnr:       row.omrnr,
+        next_update: row.neste_Publiseringsdato,
         fetched:     new Date().toISOString()
       }), { headers: CORS });
 
