@@ -1,4 +1,4 @@
-// ACI NVE Hydro Proxy — v7: nvebiapi.nve.no domain
+// ACI NVE Hydro Proxy — v8: oikea Swagger-endpoint
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -8,13 +8,6 @@ const CORS = {
 };
 
 const HISTORICAL_MEDIAN = 67.5;
-
-const ENDPOINTS = [
-  'https://nvebiapi.nve.no/api/v1/Magasinstatistikk?omrade=0&antallUker=2',
-  'https://nvebiapi.nve.no/api/Magasinstatistikk?omrade=0&antallUker=2',
-  'https://nvebiapi.nve.no/Magasinstatistikk?omrade=0&antallUker=2',
-  'https://biapi.nve.no/magasinstatistikk/api/v1/MagasinStatistikk?omrade=0',
-];
 
 export default {
   async fetch(request, env) {
@@ -29,36 +22,46 @@ export default {
       'X-API-Key': apiKey
     };
 
+    // Kokeile ensin viimeisin viikko, sitten kaikki data
+    const ENDPOINTS = [
+      'https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk/HentOffentligDataSisteUke',
+      'https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk/HentOffentligData?antallUker=2',
+      'https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk/HentOffentligData',
+    ];
+
     const results = [];
 
     for (const url of ENDPOINTS) {
       try {
         const resp = await fetch(url, { headers });
         const text = await resp.text();
-        results.push({ url, status: resp.status, preview: text.slice(0, 200) });
+        results.push({ url, status: resp.status, preview: text.slice(0, 300) });
 
         if (resp.ok) {
-          try {
-            const data = JSON.parse(text);
-            const row = Array.isArray(data) ? data[0] : data;
-            const filling = row?.fyllingsprosent ?? row?.FyllingsProsent ?? null;
+          const data = JSON.parse(text);
+          // Etsi koko Norja (omrade=0 tai NO tai null)
+          const rows = Array.isArray(data) ? data : [data];
+          const row = rows.find(r =>
+            r?.omradeNr === 0 || r?.omrade === 'NO' || r?.omradeNr == null
+          ) || rows[0];
 
-            if (filling != null) {
-              const median = row?.medianFyllingsprosent ?? HISTORICAL_MEDIAN;
-              const hydro_RF = Math.min(1.2, Math.max(0.3, filling / median));
-              return new Response(JSON.stringify({
-                source: url,
-                filling_pct: filling,
-                median_pct: median,
-                hydro_RF: Math.round(hydro_RF * 1000) / 1000,
-                label: hydro_RF < 0.80 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
-                week: `${row?.aar ?? '?'}-W${String(row?.uke ?? '?').padStart(2,'0')}`,
-                fetched: new Date().toISOString()
-              }), { headers: CORS });
-            }
-            // OK mutta filling null — näytä kaikki kentät
-            results[results.length-1].keys = Object.keys(row || {});
-          } catch(e) {}
+          const filling = row?.fyllingsprosent ?? row?.fyllingsgrad ?? null;
+          if (filling != null) {
+            const median = row?.medianFyllingsprosent ?? row?.median ?? HISTORICAL_MEDIAN;
+            const hydro_RF = Math.min(1.2, Math.max(0.3, filling / (median || HISTORICAL_MEDIAN)));
+            return new Response(JSON.stringify({
+              source: url,
+              filling_pct: filling,
+              median_pct: median,
+              hydro_RF: Math.round(hydro_RF * 1000) / 1000,
+              label: hydro_RF < 0.80 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
+              week: `${row?.aar ?? row?.year ?? '?'}-W${String(row?.uke ?? row?.week ?? '?').padStart(2,'0')}`,
+              fetched: new Date().toISOString()
+            }), { headers: CORS });
+          }
+          // Näytä kentät jos filling null
+          results[results.length-1].sample = row;
+          results[results.length-1].allKeys = Object.keys(row || {});
         }
       } catch (err) {
         results.push({ url, error: err.message });
@@ -66,7 +69,7 @@ export default {
     }
 
     return new Response(JSON.stringify({
-      error: 'All endpoints failed',
+      error: 'Parsing failed — see debug',
       hasKey: !!apiKey,
       debug: results
     }), { status: 502, headers: CORS });
