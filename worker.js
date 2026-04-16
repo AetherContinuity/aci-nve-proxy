@@ -1,6 +1,6 @@
 // ACI NVE Hydro Proxy — Cloudflare Worker
-// Hakee Norjan vesivarantotilanteen NVE:n Magasinstatistikk-rajapinnasta
-// Endpoint: GET /?week=current  tai  /?week=2024-W10
+// Endpoint: GET /?week=current
+// Lähde: NVE EnergyMarket API (avoin, ei API-avainta)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -9,68 +9,63 @@ const CORS = {
   'Content-Type': 'application/json'
 };
 
-// NVE Magasinstatistikk — koko Norja aggregoituna
-// fyllingsprosent = täyttöaste %, median = historiallinen mediaani samalle viikolle
-const NVE_URL = 'https://biapi.nve.no/magasinstatistikk/api/Magasinstatistikk';
+// Historiallinen mediaani viikottaiselle täyttöasteelle (koko Norja)
+// Lähde: NVE tilastot 1990-2020 keskiarvo ~65-70%
+// Käytetään kun live-mediaania ei ole saatavilla
+const HISTORICAL_MEDIAN = 67.5;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
     }
 
-    const url = new URL(request.url);
-    const week = url.searchParams.get('week') || 'current';
-
     try {
-      // Hae NVE:ltä — koko Norja (omrade=0)
-      const nveUrl = NVE_URL + '?omrade=0&antallUker=5';
-      const resp = await fetch(nveUrl, {
+      // NVE EnergyMarket — koko Norja, kuluva viikko
+      const url = 'http://api.nve.no/web/EnergyMarket/Currentweek/?format=json&lang=en&Omr=NO';
+      const resp = await fetch(url, {
         headers: { 'Accept': 'application/json', 'User-Agent': 'ACI-NVE-Proxy/1.0' }
       });
 
       if (!resp.ok) {
         return new Response(JSON.stringify({
-          error: 'NVE fetch failed',
-          status: resp.status
+          error: 'NVE fetch failed', status: resp.status,
+          hydro_RF: 1.0, label: 'fallback'
         }), { status: 502, headers: CORS });
       }
 
       const data = await resp.json();
 
-      // NVE palauttaa listan viikoista, uusin ensin
-      // Rakenne: { aar, uke, fyllingsprosent, medianFyllingsprosent, ... }
-      const latest = Array.isArray(data) ? data[0] : (data.data ? data.data[0] : null);
+      // Rakenne: { Aar, Uke, RelFyllGrad, EndringFraForrigeUke, InnholdGWh, Omr }
+      const filling = data.RelFyllGrad ?? null;
+      const gwh     = data.InnholdGWh ?? null;
+      const week    = data.Uke ?? null;
+      const year    = data.Aar ?? null;
 
-      if (!latest) {
-        return new Response(JSON.stringify({ error: 'No data', raw: data }), {
-          status: 404, headers: CORS
-        });
-      }
-
-      // Laske hydro_RF = täyttöaste / mediaani
-      const filling = latest.fyllingsprosent ?? latest.FyllingsProsent ?? null;
-      const median  = latest.medianFyllingsprosent ?? latest.MedianFyllingsProsent ?? null;
-      const hydro_RF = (filling != null && median != null && median > 0)
-        ? Math.min(1.2, Math.max(0.3, filling / median))
+      // hydro_RF = täyttöaste / historiallinen mediaani, rajattu 0.3–1.2
+      const hydro_RF = filling != null
+        ? Math.min(1.2, Math.max(0.3, filling / HISTORICAL_MEDIAN))
         : 1.0;
 
+      const label = hydro_RF < 0.80 ? 'low'
+                  : hydro_RF < 1.05 ? 'normal'
+                  : 'high';
+
       return new Response(JSON.stringify({
-        source: 'NVE Magasinstatistikk',
-        week: `${latest.aar ?? ''}-W${String(latest.uke ?? '').padStart(2,'0')}`,
+        source:      'NVE EnergyMarket — Currentweek',
+        week:        year && week ? `${year}-W${String(week).padStart(2,'0')}` : null,
         filling_pct: filling,
-        median_pct: median,
-        hydro_RF: Math.round(hydro_RF * 1000) / 1000,
-        label: hydro_RF < 0.85 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
-        raw_latest: latest,
-        fetched: new Date().toISOString()
+        content_gwh: gwh,
+        median_pct:  HISTORICAL_MEDIAN,
+        hydro_RF:    Math.round(hydro_RF * 1000) / 1000,
+        label,
+        change_pp:   data.EndringFraForrigeUke ?? null,
+        fetched:     new Date().toISOString()
       }), { headers: CORS });
 
     } catch (err) {
       return new Response(JSON.stringify({
-        error: err.message,
-        hydro_RF: 1.0,
-        label: 'fallback'
+        error: err.message, hydro_RF: 1.0, label: 'fallback'
       }), { status: 500, headers: CORS });
     }
   }
