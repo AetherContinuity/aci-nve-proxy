@@ -9,18 +9,16 @@ const CORS = {
 
 // NVE julkaisee viikoittain — 6h TTL riittää tuoreuteen eikä hae samaa
 // vastausta uudelleen jokaisella dashboard-latauksella.
+// Workers Cache (wrangler.toml [cache] enabled = true), ei Cache API:a
+// (caches.default) — se ei toimi workers.dev-osoitteissa (vyöhyketasoinen,
+// jaettu kaikkien workers.dev-käyttäjien kesken). Cache-Control-otsikko
+// riittää; Cloudflare tarkistaa ja tallentaa välimuistin itse.
 const TTL = 21600;
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
-    }
-
-    const cache = caches.default;
-    if (request.method === 'GET') {
-      const hit = await cache.match(request);
-      if (hit) return hit;
     }
 
     const apiKey = env.NVE_API_KEY || '';
@@ -78,7 +76,6 @@ export default {
       const response = new Response(body, { headers: CORS });
       if (request.method === 'GET') {
         response.headers.set('Cache-Control', `public, max-age=${TTL}`);
-        ctx.waitUntil(cache.put(request, response.clone()));
       }
       return response;
 

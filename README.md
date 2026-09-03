@@ -31,6 +31,7 @@ FS(p) = (nuclear + hydro × hydro_RF) / consumption
 
 ## Välimuisti
 
-Cloudflare Cache API (`caches.default`), TTL 6 h. NVE julkaisee viikoittain,
-joten sama vastaus kelpaa useille dashboard-latauksille ilman uutta
-ylävirtakutsua.
+Workers Cache (`wrangler.toml`: `[cache]` `enabled = true`), ei Cache
+API:a (`caches.default`) — se ei toimi workers.dev-osoitteissa. TTL 6 h
+`Cache-Control`-otsikolla. NVE julkaisee viikoittain, joten sama vastaus
+kelpaa useille dashboard-latauksille ilman uutta ylävirtakutsua.
