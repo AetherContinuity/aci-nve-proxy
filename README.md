@@ -28,3 +28,9 @@ GET https://aci-nve-proxy.ruotsalainen-marko.workers.dev/?week=current
 ## Käyttö WEM:ssä
 
 FS(p) = (nuclear + hydro × hydro_RF) / consumption
+
+## Välimuisti
+
+Cloudflare Cache API (`caches.default`), TTL 6 h. NVE julkaisee viikoittain,
+joten sama vastaus kelpaa useille dashboard-latauksille ilman uutta
+ylävirtakutsua.

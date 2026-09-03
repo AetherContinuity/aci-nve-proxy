@@ -7,10 +7,20 @@ const CORS = {
   'Content-Type': 'application/json'
 };
 
+// NVE julkaisee viikoittain — 6h TTL riittää tuoreuteen eikä hae samaa
+// vastausta uudelleen jokaisella dashboard-latauksella.
+const TTL = 21600;
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: CORS });
+    }
+
+    const cache = caches.default;
+    if (request.method === 'GET') {
+      const hit = await cache.match(request);
+      if (hit) return hit;
     }
 
     const apiKey = env.NVE_API_KEY || '';
@@ -49,7 +59,7 @@ export default {
 
       const hydro_RF = Math.min(1.2, Math.max(0.3, filling / HIST_MEDIAN));
 
-      return new Response(JSON.stringify({
+      const body = JSON.stringify({
         source:      'NVE Magasinstatistikk',
         week:        `${row.iso_aar}-W${String(row.iso_uke).padStart(2,'0')}`,
         date:        row.dato_Id,
@@ -64,7 +74,13 @@ export default {
         omrnr:       row.omrnr,
         next_update: row.neste_Publiseringsdato,
         fetched:     new Date().toISOString()
-      }), { headers: CORS });
+      });
+      const response = new Response(body, { headers: CORS });
+      if (request.method === 'GET') {
+        response.headers.set('Cache-Control', `public, max-age=${TTL}`);
+        ctx.waitUntil(cache.put(request, response.clone()));
+      }
+      return response;
 
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: CORS });
