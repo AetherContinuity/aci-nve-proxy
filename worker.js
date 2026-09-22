@@ -6,10 +6,11 @@
 //   GET /syke/meta       [?entity=Paikka]   entiteettien kentät ja tyypit
 //   GET /syke/wsfs       ?point=l147221001y  WSFS-ennuste (malli, EI havainto)
 //   GET /vesiraja[/stations|/variables|/statistics]  [?v=1.0]  SYKE Vesiraja API
+//   GET /era5            ?lat=&lng=&start=YYYY-MM-DD   ERA5-Land via Open-Meteo (BEM §03), palautettu v12.2
 //   GET /version         deployn tarkistus
 // Tuntemattomat polut → 404 (ei välimuistiin). Välimuisti: wrangler.toml [cache] + Cache-Control.
 
-const VERSION = 'v12.1-2026-09-17';
+const VERSION = 'v12.2-2026-09-22';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -43,6 +44,7 @@ export default {
       if (p === '/syke') return await handleHydOdata(u.searchParams);
       if (p === '/syke/meta') return await handleHydMeta(u.searchParams);
       if (p === '/syke/wsfs') return await handleWsfs(u.searchParams);
+      if (p === '/era5') return await handleERA5(u.searchParams);
       if (p.startsWith('/vesiraja')) return await handleVesiraja(p, u.searchParams);
       return json({ error: `unknown path: ${p}`, version: VERSION }, 404, 0);
     } catch (err) {
@@ -202,4 +204,38 @@ async function handleVesiraja(path, params) {
   const r = await fetch(endpoint, { headers: { 'Accept': 'application/json', 'User-Agent': 'ACI-HEM/1.2' } });
   if (!r.ok) return upstreamError('Vesiraja', r, endpoint);
   return json({ source: 'SYKE Vesiraja API', endpoint, data: await r.json() }, 200, TTL_SYKE);
+}
+
+// ─── ERA5-Land via Open-Meteo (palautettu v12.2) ─────────────────────────
+// BEM §03 kutsuu /era5:tä. Reitti oli HEM-repon vanhassa workerissa, mutta ei
+// NVE-proxyn omassa repossa -> v12:n 404-kasittely paljasti puutteen
+// (aiemmin tuntematon polku palautti NVE-datan 200-koodilla ja kortti nayttI viivaa).
+// Ei API-avainta. ERA5-arkistossa on ~5 vrk viive.
+async function handleERA5(params) {
+  const lat = Number(params.get('lat') || '62.95');
+  const lng = Number(params.get('lng') || '26.85');
+  const start = params.get('start') || '2015-01-01';
+  if (!(lat >= 59 && lat <= 71 && lng >= 19 && lng <= 32)) return json({ error: 'lat/lng Suomen ulkopuolella' }, 400, 0);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || start < '1950-01-01') return json({ error: 'start = YYYY-MM-DD (>= 1950)' }, 400, 0);
+  const end = new Date(Date.now() - 6 * 864e5).toISOString().slice(0, 10);
+  const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat + '&longitude=' + lng +
+    '&start_date=' + start + '&end_date=' + end + '&daily=precipitation_sum,temperature_2m_mean&timezone=Europe%2FHelsinki';
+  const r = await fetch(url, { headers: { 'User-Agent': 'ACI-BEM/1.2' } });
+  if (!r.ok) return upstreamError('Open-Meteo', r, url);
+  const d = await r.json();
+  const pr = (d.daily?.precipitation_sum || []).filter(v => v != null);
+  const tm = (d.daily?.temperature_2m_mean || []).filter(v => v != null);
+  if (pr.length < 730) return json({ error: 'liian lyhyt sarja', n_days: pr.length }, 502, 0);
+  const recent = pr.slice(-365).reduce((a, b) => a + b, 0);
+  const ref = pr.slice(0, -365);
+  const refAnn = ref.reduce((a, b) => a + b, 0) / ref.length * 365;
+  const lastT = tm.slice(-30);
+  return json({
+    source: 'ERA5-Land via Open-Meteo', lat, lng, start, end,
+    precip_12mo_mm: Math.round(recent),
+    precip_ref_ann_mm: Math.round(refAnn),
+    precip_anomaly_pct: Math.round((recent - refAnn) / refAnn * 1000) / 10,
+    temp_30d_avg_c: lastT.length ? Math.round(lastT.reduce((a, b) => a + b, 0) / lastT.length * 10) / 10 : null,
+    n_days: pr.length,
+  }, 200, 21600);
 }
