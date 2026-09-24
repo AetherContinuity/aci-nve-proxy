@@ -7,10 +7,11 @@
 //   GET /syke/wsfs       ?point=l147221001y  WSFS-ennuste (malli, EI havainto)
 //   GET /vesiraja[/stations|/variables|/statistics]  [?v=1.0]  SYKE Vesiraja API
 //   GET /era5            ?lat=&lng=&start=YYYY-MM-DD   ERA5-Land via Open-Meteo (BEM §03), palautettu v12.2
+//   GET /era5/hourly     ?lat=&lng=&start=&end=        tuntilampotilat (WEM:n EPP-takautuva laskenta, v12.3)
 //   GET /version         deployn tarkistus
 // Tuntemattomat polut → 404 (ei välimuistiin). Välimuisti: wrangler.toml [cache] + Cache-Control.
 
-const VERSION = 'v12.2-2026-09-22';
+const VERSION = 'v12.3-2026-09-24';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -45,6 +46,7 @@ export default {
       if (p === '/syke/meta') return await handleHydMeta(u.searchParams);
       if (p === '/syke/wsfs') return await handleWsfs(u.searchParams);
       if (p === '/era5') return await handleERA5(u.searchParams);
+      if (p === '/era5/hourly') return await handleERA5Hourly(u.searchParams);
       if (p.startsWith('/vesiraja')) return await handleVesiraja(p, u.searchParams);
       return json({ error: `unknown path: ${p}`, version: VERSION }, 404, 0);
     } catch (err) {
@@ -238,4 +240,26 @@ async function handleERA5(params) {
     temp_30d_avg_c: lastT.length ? Math.round(lastT.reduce((a, b) => a + b, 0) / lastT.length * 10) / 10 : null,
     n_days: pr.length,
   }, 200, 21600);
+}
+
+// ─── Tuntilampotilat (v12.3) ────────────────────────────────────────────
+// WEM:n nollajakauma vaatii EPP:n laskemisen taaksepain nykyisella kaavalla,
+// ja DP_t tarvitsee tuntilampotilat kolmelta asemalta. Open-Meteon arkisto
+// ei ole saavutettavissa laskentaymparistosta, joten reitti valittaa sen.
+// Max 400 vrk kutsua kohti (Open-Meteon vastauskoko).
+async function handleERA5Hourly(params) {
+  const lat = Number(params.get('lat')), lng = Number(params.get('lng'));
+  const start = params.get('start'), end = params.get('end');
+  if (!(lat >= 55 && lat <= 72 && lng >= 15 && lng <= 35)) return json({ error: 'lat/lng Pohjolan ulkopuolella' }, 400, 0);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start || '') || !/^\d{4}-\d{2}-\d{2}$/.test(end || ''))
+    return json({ error: 'start ja end muodossa YYYY-MM-DD' }, 400, 0);
+  if ((Date.parse(end) - Date.parse(start)) / 864e5 > 400) return json({ error: 'enintaan 400 vrk kutsua kohti' }, 400, 0);
+  const url = 'https://archive-api.open-meteo.com/v1/archive?latitude=' + lat + '&longitude=' + lng +
+    '&start_date=' + start + '&end_date=' + end + '&hourly=temperature_2m&timezone=UTC';
+  const r = await fetch(url, { headers: { 'User-Agent': 'ACI-WEM/1.0' } });
+  if (!r.ok) return upstreamError('Open-Meteo', r, url);
+  const d = await r.json();
+  const t = d.hourly?.time || [], v = d.hourly?.temperature_2m || [];
+  if (!t.length) return json({ error: 'ei tuntidataa', start, end }, 502, 0);
+  return json({ source: 'ERA5 via Open-Meteo archive', lat, lng, start, end, n: t.length, time: t, temperature_2m: v }, 200, 86400);
 }
