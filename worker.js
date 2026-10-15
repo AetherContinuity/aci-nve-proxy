@@ -11,7 +11,7 @@
 //   GET /version         deployn tarkistus
 // Tuntemattomat polut → 404 (ei välimuistiin). Välimuisti: wrangler.toml [cache] + Cache-Control.
 
-const VERSION = 'v12.3-2026-09-24';
+const VERSION = 'v12.4-2026-10-15';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -120,7 +120,11 @@ async function handleNve(env) {
     min_pct: mm('minFyllingsgrad', 'min_fyllingsgrad'),
     max_pct: mm('maxFyllingsgrad', 'max_fyllingsgrad'),
     hydro_RF: Math.round(hydro_RF * 1000) / 1000,
-    label: hydro_RF < 0.80 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
+    // v12.4 (2026-10-15): low-raja 0.80 -> 0.90. 0.80:lla vk 41/2026 (69 % vs.
+    // mediaani 82,2 %, toiseksi alin 11 vuoteen) oli 'normal'. HEM:n HSP:
+    // low 0.70, normal 0.38, high 0.15.
+    label: hydro_RF < 0.90 ? 'low' : hydro_RF < 1.05 ? 'normal' : 'high',
+    label_thresholds: { low_below: 0.90, high_from: 1.05 },
     omrType: row.omrType,
     omrnr: row.omrnr,
     next_update: row.neste_Publiseringsdato,
